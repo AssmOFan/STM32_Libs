@@ -1,0 +1,103 @@
+
+Копирование одного массива в другой. Режим MEM2MEM
+
+// Массив который копируем и куда копируем
+static uint32_t INbuff[10] = {0xFFFFFFF1,0xFFFFFFF2,0xFFFFFFF3,0xFFFFFFF4,0xFFFFFFF5,0xFFFFFFF6,0xFFFFFFF7,0xFFFFFFF8,0xFFFFFFF9,0xFFFFFF10};
+static uint32_t OUTbuff[10] = {0};
+ 
+	// Включаем тактирование DMA
+	RCC->AHBENR	|= RCC_AHBENR_DMA1EN;
+ 
+	// Обнуляем канал который будем использовать. Канал берем от балды. Для этой цели подойдет любой свободный.
+	DMA_DeInit(DMA1_Channel3);
+ 
+	// Настраиваем
+	DMA_Init( DMA1_Channel3,		// Какой канал работать будет
+              (uint32_t)INbuff,			// Откуда
+              (uint32_t)OUTbuff,		// Куда
+              10,				// Сколько. 10 двойных слов, не байтов!!! Массив у нас на 10 элементов
+              TransCompl_Int_Disable      +	// Прерывание по передаче выключено
+              HalfCompl_Int_Disable       +	// Прерывание по половине выключено
+              TransError_Int_Disable      +	// Прерывание по ошибке выключено
+              ReadPerif                   +	// Читаем из "периферии"
+              CircularMode_Disable        +	// Циклический режим не нужен. Копируем один раз
+              PeripheralInc_Enable        +	// Увеличиваем адрес источника
+              MemoryInc_Enable            +	// Увеличиваем адрес приемника
+              PDataSize_DW                +	// Размер источника двойной слово
+              MDataSize_DW                +	// Размер приемника двойное слово
+              DMA_Priority_Low            +	// Низкий приоритет
+              M2M_Enable                 );	// Копирование память-память
+ 
+	// Разрешаем копирование
+	DMA_Enable(DMA1_Channel3);
+}
+
+
+
+Копирование из периферии в память
+
+В данном случае из выходного регистра USART в кольцевой буфер в ОЗУ. Все что попадет в USART окажется в памяти автоматом.
+
+static volatile char BufferForRecieving1[256];	// Кольцевой приемный буфер
+ 
+	RCC->AHBENR	|= RCC_AHBENR_DMA1EN;	// Подали тактирование на DMA
+ 
+	DMA_Disable(DMA1_Channel5);		// Выключили канал
+	DMA_DeInit(DMA1_Channel5);		// Обнулили DMA канал
+ 
+	USART1->SR &=~(USART_SR_TC);		// Сбросили флаг передачи
+	USART1->CR3 |=USART_CR3_DMAR;		// Включили сигнал от приема на DMA. В данном случае за UART1 на RX закреплен DMA1_Channel5
+ 
+	// Настраиваем канал
+	DMA_Init( DMA1_Channel5,		// Пятый канал 1 контроллера
+              (uint32_t)&(USART1->DR),		// Адрес откуда брать -- адрес регистра DR  в USART1
+              (uint32_t)BufferForRecieving1,	// Адрес куда класть результат
+              sizeof(BufferForRecieving1),	// Сколько класть? Так как буфер у нас из char, то sizeof будет равен числу элементов. Но лучше так не делать ;)
+              TransCompl_Int_Disable      +	// Прерывание по окончанию выключено
+              HalfCompl_Int_Disable       +	// Прерывание по половине выключено
+              TransError_Int_Disable      +	// Прерывание по ошибке выключено
+              ReadPerif                   +	// Читаем из периферии
+              CircularMode_Enable         +	// Цикличный режим включен
+              PeripheralInc_Disable       +	// Адрес периферии не увеличиваем
+              MemoryInc_Enable            +	// А вот адрес примного буфера увеличиваем, перебирая байт за байтом его
+              PDataSize_B                 +	// Размер данных из периферии - байт
+              MDataSize_B                 +	// Размер данных в памяти - байт
+              DMA_Priority_Low            +	// Низкий приоритет
+              M2M_Disable                 );	// Режим копирования память-память выключен
+ 
+	// Включаем DMA - поехали!
+	DMA_Enable(DMA1_Channel5);
+
+Теперь все что попадает в USART будет DMA утаскивать прямо в буфер, остается только его проверять. Ну или включить прерывания по половине и/или окончании передачи и реагировать на них.
+
+
+
+Копирование из буфера в периферию
+
+static volatile char BufferForSending1[256];
+ 
+	DMA_Disable(DMA1_Channel4);		// Выключили канал
+	DMA_DeInit(DMA1_Channel4);		// Сбросили все настройки
+ 
+ 
+	DMA_Init( DMA1_Channel4,		// Канал будет 4 контроллера 1. Именно этот канал пинает USART1 при передаче
+              (uint32_t)&(USART1->DR),		// Указываем адрес регистра данных USART
+              (uint32_t)BufferForSending1,	// Указываем адрес буфера для передачи. В него предварительно записаны данные
+              256,				// Указываем размер буфера
+              TransCompl_Int_Disable      +	// Прерывание по окончанию выключено
+              HalfCompl_Int_Disable       +	// Прерывание по половине посылке выключено
+              TransError_Int_Disable      +	// Прерывание по ошибке выключено
+              ReadMemory                  +	// Читаем из памяти (а пишем в периферию)
+              CircularMode_Disable        +	// Циклический режим выключен
+              PeripheralInc_Disable       +	// Адрес периферии не меняем
+              MemoryInc_Enable            +	// А вот адрес памяти наоборот увеличиваем
+              PDataSize_B                 +	// Данные размером в байт в периферии
+              MDataSize_B                 +	// Данные размером в байт в памяти
+              DMA_Priority_Low            +	// Низкий приоритет
+              M2M_Disable                 );	// Не из памяти в память
+ 
+ 
+	DMA1->IFCR = DMA_IFCR_CTCIF4;		// Сбрасываем флажок бита пустого регистра. Чтобы не отправить сразу нулевой байт
+	USART1->CR3 |=USART_CR3_DMAT;		// Подключаем канал DMA к UART. Установив бит отвечающий за пинание уартом дма канала.
+ 
+	DMA_Enable(DMA1_Channel4);		// Поехали!
